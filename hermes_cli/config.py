@@ -484,6 +484,12 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Timestamp prefix injection for human user messages.
+    "Timestamp": {
+        "inject_human_messages": False,  # Add "(current message time: ...)" to real user turns only
+        "min_interval_minutes": 30,      # Skip re-injection when the last timestamp is newer than this
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
@@ -547,7 +553,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 14,
 }
 
 # =============================================================================
@@ -1338,7 +1344,8 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "memory", "gateway", "timezone",
+    "Timestamp",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -1642,6 +1649,54 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
+
+    # ── Version 12 → 13: add Timestamp settings ──
+    if current_ver < 13:
+        config = load_config()
+        if "Timestamp" not in config or not isinstance(config.get("Timestamp"), dict):
+            config["Timestamp"] = {
+                "inject_human_messages": False,
+                "min_interval_minutes": 30,
+            }
+            results["config_added"].append(
+                "Timestamp={inject_human_messages: false, min_interval_minutes: 30}"
+            )
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added Timestamp settings to config.yaml")
+
+    # ── Version 13 → 14: canonicalize timestamp key casing ──
+    if current_ver < 14:
+        config = load_config()
+        lower = config.get("timestamp")
+        upper = config.get("Timestamp")
+        changed = False
+        if isinstance(upper, dict):
+            # Ensure both expected fields exist
+            upper.setdefault("inject_human_messages", False)
+            upper.setdefault("min_interval_minutes", 30)
+            config["Timestamp"] = upper
+            changed = True
+        elif isinstance(lower, dict):
+            # Promote lowercase key to canonical "Timestamp"
+            promoted = dict(lower)
+            promoted.setdefault("inject_human_messages", False)
+            promoted.setdefault("min_interval_minutes", 30)
+            config["Timestamp"] = promoted
+            changed = True
+        else:
+            config["Timestamp"] = {
+                "inject_human_messages": False,
+                "min_interval_minutes": 30,
+            }
+            changed = True
+        if "timestamp" in config:
+            del config["timestamp"]
+            changed = True
+        if changed:
+            save_config(config)
+            if not quiet:
+                print("  ✓ Canonicalized timestamp config key to 'Timestamp'")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -2414,6 +2469,17 @@ def show_config():
         print(f"  Timezone:     {tz}")
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+
+    # Timestamp
+    print()
+    print(color("◆ Timestamp", Colors.CYAN, Colors.BOLD))
+    ts_cfg = config.get("Timestamp", {})
+    if not isinstance(ts_cfg, dict):
+        ts_cfg = {}
+    inject_human = ts_cfg.get("inject_human_messages", False)
+    min_minutes = ts_cfg.get("min_interval_minutes", 30)
+    print(f"  Inject human messages: {inject_human}")
+    print(f"  Min interval minutes:  {min_minutes}")
 
     # Compression
     print()

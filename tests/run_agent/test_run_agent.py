@@ -7,8 +7,10 @@ are made.
 
 import json
 import logging
+import os
 import re
 import uuid
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
@@ -3248,6 +3250,49 @@ class TestPersistUserMessageOverride:
         assert saved_messages[0]["content"] == "Hello there"
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
+
+
+# ---------------------------------------------------------------------------
+# Time-aware user message prefix (opt-in via HERMES_INJECT_MESSAGE_TIME)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeAwareUserPrefix:
+    def test_build_api_user_message_disabled_by_default(self, agent):
+        agent._inject_message_time = False
+        assert agent._build_api_user_message("hello") == "hello"
+
+    def test_build_api_user_message_adds_prefix_with_utc_timezone(self, agent):
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 0
+        with patch.dict(os.environ, {"HERMES_TIMEZONE": "UTC"}, clear=False):
+            content = agent._build_api_user_message("hello")
+        assert content.startswith("(current message time: ")
+        assert content.endswith(" UTC)\nhello")
+
+    def test_build_api_user_message_invalid_timezone_falls_back(self, agent):
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 0
+        with patch.dict(os.environ, {"HERMES_TIMEZONE": "Not/A_Zone"}, clear=False):
+            content = agent._build_api_user_message("hello")
+        assert content.startswith("(current message time: ")
+        assert content.endswith("\nhello")
+
+    def test_build_api_user_message_skips_non_human_message(self, agent):
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 0
+        assert agent._build_api_user_message("hello", is_human_message=False) == "hello"
+
+    def test_build_api_user_message_respects_min_interval(self, agent):
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 30
+        first = datetime(2026, 4, 6, 13, 6).astimezone()
+        second = datetime(2026, 4, 6, 13, 20).astimezone()
+        with patch.object(agent, "_message_time_now", side_effect=[first, second]):
+            content1 = agent._build_api_user_message("hello")
+            content2 = agent._build_api_user_message("hello again")
+        assert content1.startswith("(current message time: ")
+        assert content2 == "hello again"
 
 
 # ---------------------------------------------------------------------------
