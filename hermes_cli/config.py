@@ -484,6 +484,12 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Timestamp prefix injection for human user messages.
+    "timestamp": {
+        "inject_human_messages": False,  # Add "(current message time: ...)" to real user turns only
+        "min_interval_minutes": 30,      # Skip re-injection when the last timestamp is newer than this
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
@@ -547,7 +553,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 13,
 }
 
 # =============================================================================
@@ -1338,7 +1344,8 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "memory", "gateway", "timezone",
+    "timestamp",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -1642,6 +1649,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
+
+    # ── Version 12 → 13: add timestamp settings ──
+    if current_ver < 13:
+        config = load_config()
+        if "timestamp" not in config or not isinstance(config.get("timestamp"), dict):
+            config["timestamp"] = {
+                "inject_human_messages": False,
+                "min_interval_minutes": 30,
+            }
+            results["config_added"].append(
+                "timestamp={inject_human_messages: false, min_interval_minutes: 30}"
+            )
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added timestamp settings to config.yaml")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -2414,6 +2436,12 @@ def show_config():
         print(f"  Timezone:     {tz}")
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+    ts_cfg = config.get("timestamp", {})
+    if not isinstance(ts_cfg, dict):
+        ts_cfg = {}
+    inject_human = ts_cfg.get("inject_human_messages", False)
+    min_minutes = ts_cfg.get("min_interval_minutes", 30)
+    print(f"  Timestamp:    inject_human_messages={inject_human}, min_interval_minutes={min_minutes}")
 
     # Compression
     print()
