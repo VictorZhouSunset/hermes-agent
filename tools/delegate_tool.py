@@ -370,7 +370,14 @@ def _run_single_child(
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
-        result = child.run_conversation(user_message=goal)
+        try:
+            result = child.run_conversation(user_message=goal, is_human_message=False)
+        except TypeError as exc:
+            # Backward-compat for tests/custom wrappers that still expose the
+            # old run_conversation(user_message=...) signature only.
+            if "is_human_message" not in str(exc):
+                raise
+            result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):

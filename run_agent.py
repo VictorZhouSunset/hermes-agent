@@ -42,6 +42,7 @@ from openai import OpenAI
 import fire
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hermes_constants import get_hermes_home
 
@@ -104,7 +105,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, env_var_enabled
+from utils import atomic_json_write, env_var_enabled, is_truthy_value
 
 
 
@@ -699,6 +700,10 @@ class AIAgent:
         # (e.g. CLI voice mode adds a temporary prefix for the live call only).
         self._persist_user_message_idx = None
         self._persist_user_message_override = None
+        self._inject_message_time = env_var_enabled("HERMES_INJECT_MESSAGE_TIME")
+        self._message_time_min_interval_minutes = 30
+        self._last_human_timestamp_prefix_at = None
+        self._message_time_tz_warned = False
 
         # Cache anthropic image-to-text fallbacks per image payload/URL so a
         # single tool loop does not repeatedly re-run auxiliary vision on the
@@ -965,6 +970,23 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+
+        # Optional timestamp injection policy for human user turns.
+        try:
+            _timestamp_cfg = _agent_cfg.get("timestamp", {})
+            if isinstance(_timestamp_cfg, dict):
+                if "inject_human_messages" in _timestamp_cfg:
+                    self._inject_message_time = is_truthy_value(
+                        _timestamp_cfg.get("inject_human_messages"),
+                        default=self._inject_message_time,
+                    )
+                if "min_interval_minutes" in _timestamp_cfg:
+                    self._message_time_min_interval_minutes = max(
+                        0,
+                        int(_timestamp_cfg.get("min_interval_minutes", 30)),
+                    )
+        except Exception:
+            pass
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -1761,6 +1783,7 @@ class AIAgent:
                     review_agent.run_conversation(
                         user_message=prompt,
                         conversation_history=messages_snapshot,
+                        is_human_message=False,
                     )
 
                 # Scan the review agent's messages for successful tool actions
@@ -1838,6 +1861,55 @@ class AIAgent:
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
+
+    def _message_time_now(self) -> datetime:
+        """Resolve current time using configured timezone when available."""
+        tz_name = (os.getenv("HERMES_TIMEZONE", "") or "").strip()
+        now = datetime.now().astimezone()
+        if tz_name:
+            try:
+                now = datetime.now(ZoneInfo(tz_name))
+            except (ZoneInfoNotFoundError, ValueError):
+                if not getattr(self, "_message_time_tz_warned", False):
+                    logger.warning(
+                        "Invalid HERMES_TIMEZONE=%r; using local timezone for message timestamp",
+                        tz_name,
+                    )
+                    self._message_time_tz_warned = True
+        return now
+
+    def _message_time_prefix(self, *, is_human_message: bool) -> str:
+        """Return a turn-local timestamp prefix for human user messages."""
+        if not getattr(self, "_inject_message_time", False):
+            return ""
+        if not is_human_message:
+            return ""
+
+        now = self._message_time_now()
+        last_prefixed = getattr(self, "_last_human_timestamp_prefix_at", None)
+        min_gap = int(getattr(self, "_message_time_min_interval_minutes", 30) or 0)
+        if (
+            min_gap > 0
+            and isinstance(last_prefixed, datetime)
+            and (now - last_prefixed).total_seconds() < (min_gap * 60)
+        ):
+            return ""
+
+        hour = now.strftime("%I").lstrip("0") or "0"
+        meridiem = now.strftime("%p").lower()
+        ts = f"{hour}:{now.strftime('%M')}{meridiem} {now.strftime('%b %d, %Y')}"
+        tz_label = now.strftime("%Z")
+        if tz_label:
+            ts = f"{ts} {tz_label}"
+        self._last_human_timestamp_prefix_at = now
+        return f"(current message time: {ts})"
+
+    def _build_api_user_message(self, user_message: str, *, is_human_message: bool = True) -> str:
+        """Build API-facing user content with optional time metadata."""
+        prefix = self._message_time_prefix(is_human_message=is_human_message)
+        if not prefix:
+            return user_message
+        return f"{prefix}\n{user_message}"
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -6805,6 +6877,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        is_human_message: bool = True,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -6821,6 +6894,9 @@ class AIAgent:
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
                     or queuing follow-up prefetch work.
+            is_human_message: Whether this turn came from a real user. Internal
+                subagent/control prompts should pass False so timestamp prefixes
+                are only applied to real human messages.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -6929,8 +7005,14 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
-        # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        # Add user message (optionally prefixed with turn-local timestamp
+        # metadata for API context only).
+        api_user_message = self._build_api_user_message(
+            user_message, is_human_message=is_human_message
+        )
+        if api_user_message != user_message and self._persist_user_message_override is None:
+            self._persist_user_message_override = user_message
+        user_msg = {"role": "user", "content": api_user_message}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
