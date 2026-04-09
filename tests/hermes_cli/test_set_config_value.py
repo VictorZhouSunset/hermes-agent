@@ -117,6 +117,14 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_writes_timestamp_defaults_to_user_config(self, _isolated_hermes_home):
+        """Timestamp defaults should be materialized in config.yaml."""
+        set_config_value("model", "gpt-4o")
+        config = _read_config(_isolated_hermes_home)
+        assert "Timestamp:" in config
+        assert "inject_human_messages: false" in config
+        assert "min_interval_minutes: 30" in config
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

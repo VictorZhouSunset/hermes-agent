@@ -1667,36 +1667,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 13 → 14: canonicalize timestamp key casing ──
     if current_ver < 14:
-        config = load_config()
-        lower = config.get("timestamp")
-        upper = config.get("Timestamp")
-        changed = False
-        if isinstance(upper, dict):
-            # Ensure both expected fields exist
-            upper.setdefault("inject_human_messages", False)
-            upper.setdefault("min_interval_minutes", 30)
-            config["Timestamp"] = upper
-            changed = True
-        elif isinstance(lower, dict):
-            # Promote lowercase key to canonical "Timestamp"
-            promoted = dict(lower)
-            promoted.setdefault("inject_human_messages", False)
-            promoted.setdefault("min_interval_minutes", 30)
-            config["Timestamp"] = promoted
-            changed = True
-        else:
-            config["Timestamp"] = {
-                "inject_human_messages": False,
-                "min_interval_minutes": 30,
-            }
-            changed = True
-        if "timestamp" in config:
-            del config["timestamp"]
-            changed = True
+        config = read_raw_config()
+        config, changed = _ensure_timestamp_defaults(config)
         if changed:
             save_config(config)
             if not quiet:
                 print("  ✓ Canonicalized timestamp config key to 'Timestamp'")
+
+    # Keep Timestamp defaults self-healing even on latest config versions.
+    config = read_raw_config()
+    config, changed = _ensure_timestamp_defaults(config)
+    if changed:
+        save_config(config)
+        if not quiet:
+            print("  ✓ Restored missing Timestamp defaults in config.yaml")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -1888,6 +1872,36 @@ def _expand_env_vars(obj):
     if isinstance(obj, list):
         return [_expand_env_vars(item) for item in obj]
     return obj
+
+
+def _ensure_timestamp_defaults(config: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Return config with canonical Timestamp defaults ensured."""
+    changed = False
+    normalized = dict(config or {})
+
+    lower = normalized.get("timestamp")
+    upper = normalized.get("Timestamp")
+    if isinstance(upper, dict):
+        ts_cfg = dict(upper)
+    elif isinstance(lower, dict):
+        ts_cfg = dict(lower)
+        changed = True
+    else:
+        ts_cfg = {}
+        changed = True
+
+    if "inject_human_messages" not in ts_cfg:
+        ts_cfg["inject_human_messages"] = False
+        changed = True
+    if "min_interval_minutes" not in ts_cfg:
+        ts_cfg["min_interval_minutes"] = 30
+        changed = True
+
+    normalized["Timestamp"] = ts_cfg
+    if "timestamp" in normalized:
+        del normalized["timestamp"]
+        changed = True
+    return normalized, changed
 
 
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -2469,12 +2483,6 @@ def show_config():
         print(f"  Timezone:     {tz}")
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
-    ts_cfg = config.get("timestamp", {})
-    if not isinstance(ts_cfg, dict):
-        ts_cfg = {}
-    inject_human = ts_cfg.get("inject_human_messages", False)
-    min_minutes = ts_cfg.get("min_interval_minutes", 30)
-    print(f"  Timestamp:    inject_human_messages={inject_human}, min_interval_minutes={min_minutes}")
 
     # Timestamp
     print()
@@ -2650,6 +2658,7 @@ def set_config_value(key: str, value: str):
     current[parts[-1]] = value
     
     # Write only user config back (not the full merged defaults)
+    user_config, _ = _ensure_timestamp_defaults(user_config)
     ensure_hermes_home()
     with open(config_path, 'w', encoding="utf-8") as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
