@@ -973,7 +973,7 @@ class AIAgent:
 
         # Optional timestamp injection policy for human user turns.
         try:
-            _timestamp_cfg = _agent_cfg.get("timestamp", {})
+            _timestamp_cfg = _agent_cfg.get("Timestamp", {})
             if isinstance(_timestamp_cfg, dict):
                 if "inject_human_messages" in _timestamp_cfg:
                     self._inject_message_time = is_truthy_value(
