@@ -2469,6 +2469,12 @@ def show_config():
         print(f"  Timezone:     {tz}")
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+    ts_cfg = config.get("timestamp", {})
+    if not isinstance(ts_cfg, dict):
+        ts_cfg = {}
+    inject_human = ts_cfg.get("inject_human_messages", False)
+    min_minutes = ts_cfg.get("min_interval_minutes", 30)
+    print(f"  Timestamp:    inject_human_messages={inject_human}, min_interval_minutes={min_minutes}")
 
     # Timestamp
     print()
