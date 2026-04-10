@@ -703,6 +703,7 @@ class AIAgent:
         self._inject_message_time = env_var_enabled("HERMES_INJECT_MESSAGE_TIME")
         self._message_time_min_interval_minutes = 30
         self._last_human_timestamp_prefix_at = None
+        self._last_generated_user_timestamp_prefix = False
         self._message_time_tz_warned = False
 
         # Cache anthropic image-to-text fallbacks per image payload/URL so a
@@ -1907,6 +1908,7 @@ class AIAgent:
     def _build_api_user_message(self, user_message: str, *, is_human_message: bool = True) -> str:
         """Build API-facing user content with optional time metadata."""
         prefix = self._message_time_prefix(is_human_message=is_human_message)
+        self._last_generated_user_timestamp_prefix = bool(prefix)
         if not prefix:
             return user_message
         return f"{prefix}\n{user_message}"
@@ -6922,6 +6924,7 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._last_generated_user_timestamp_prefix = False
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -7010,7 +7013,11 @@ class AIAgent:
         api_user_message = self._build_api_user_message(
             user_message, is_human_message=is_human_message
         )
-        if api_user_message != user_message and self._persist_user_message_override is None:
+        if (
+            api_user_message != user_message
+            and self._persist_user_message_override is None
+            and not self._last_generated_user_timestamp_prefix
+        ):
             self._persist_user_message_override = user_message
         user_msg = {"role": "user", "content": api_user_message}
         messages.append(user_msg)
