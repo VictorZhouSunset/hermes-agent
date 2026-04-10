@@ -421,3 +421,23 @@ class TestAnthropicTokenMigration:
         }):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
+
+
+class TestTimestampDefaultsHealing:
+    def test_migrate_restores_missing_min_interval_on_latest_version(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "Timestamp": {"inject_human_messages": True},
+                },
+                sort_keys=False,
+            )
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            saved = yaml.safe_load(config_path.read_text())
+            assert saved["Timestamp"]["inject_human_messages"] is True
+            assert saved["Timestamp"]["min_interval_minutes"] == 30

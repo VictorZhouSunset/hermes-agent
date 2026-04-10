@@ -1487,6 +1487,40 @@ class TestRunConversation:
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
 
+    def test_timestamp_injected_user_message_remains_in_returned_history(self, agent):
+        self._setup_agent(agent)
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 0
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.dict(os.environ, {"HERMES_TIMEZONE": "UTC"}, clear=False),
+        ):
+            result = agent.run_conversation("hello")
+
+        user_messages = [m for m in result["messages"] if m.get("role") == "user"]
+        assert user_messages
+        assert user_messages[-1]["content"].startswith("(current message time: ")
+        assert user_messages[-1]["content"].endswith(" UTC)\nhello")
+
+    def test_non_timestamp_api_message_still_uses_persist_override(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_build_api_user_message", return_value="[voice]\nhello"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        user_messages = [m for m in result["messages"] if m.get("role") == "user"]
+        assert user_messages
+        assert user_messages[-1]["content"] == "hello"
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 
@@ -3293,6 +3327,14 @@ class TestTimeAwareUserPrefix:
             content2 = agent._build_api_user_message("hello again")
         assert content1.startswith("(current message time: ")
         assert content2 == "hello again"
+
+    def test_timestamp_prefix_is_not_marked_for_persist_override(self, agent):
+        agent._inject_message_time = True
+        agent._message_time_min_interval_minutes = 0
+        with patch.dict(os.environ, {"HERMES_TIMEZONE": "UTC"}, clear=False):
+            content = agent._build_api_user_message("hello")
+        assert content.startswith("(current message time: ")
+        assert agent._last_generated_user_timestamp_prefix is True
 
 
 # ---------------------------------------------------------------------------
